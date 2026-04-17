@@ -74,7 +74,3 @@ workspaces:
                           >> "${PR_WATCHER_HOME}/logs/watch-prs.log" 2>&1
                     schedule: "*/5 * * * *"
                     disable_on_start: false
-                commands:
-                  watch-prs-now:
-                    run:
-                      cmd: "${PR_WATCHER_HOME}/watch-prs.sh"

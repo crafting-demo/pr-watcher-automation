@@ -24,8 +24,7 @@ whatever the user asked for.
 - `sandbox.yaml` — sandbox definition consumed by Crafting. Has one workspace
   with a Repo manifest that installs the scripts, installs the GitHub CLI
   (`gh`) from the official apt repo, and registers a cron-scheduled
-  `jobs.watch-prs` entry. Also exposes a manual `commands.watch-prs-now`
-  entry point for on-demand testing via `cs sandbox cmd watch-prs-now`.
+  `jobs.watch-prs` entry.
 - `scripts/watch-prs.sh` — cron body. Uses `gh pr list` + `--template` for
   PR enumeration; no `curl`/`jq` dependency.
 - `scripts/on-new-pr.sh` — placeholder per-PR hook. Exits 0 by default.
@@ -100,10 +99,19 @@ cs logs -f pr-watcher   # live stream
 cat ~/pr-watcher/logs/watch-prs.log
 ```
 
-To run the watcher once on demand (e.g. to validate the setup):
+To run the watcher once on demand (e.g. to validate the setup), either
+`cs exec` into the workspace:
 
 ```sh
-cs sandbox cmd watch-prs-now
+cs exec -W pr-watcher-my-repo/pr-watcher -- /home/owner/pr-watcher/watch-prs.sh
+```
+
+or `cs ssh` in and run the script by hand:
+
+```sh
+cs ssh pr-watcher-my-repo/pr-watcher
+# inside the workspace:
+~/pr-watcher/watch-prs.sh
 ```
 
 ## State and idempotency
