@@ -17,9 +17,10 @@ overview: |
     - TARGET_GITHUB_REPO  GitHub repo name
 
   Required secret:
-    - github-token        User-private OPAQUE secret holding a GitHub token
-                          with `repo` scope. Create with:
-                              cs secret create -u github-token -f                             
+    - github-token        User-private OPAQUE secret holding a GitHub token.
+                          For a fine-grained PAT, grant Pull requests: Read
+                          on the target repo. Create with:
+                              cs secret create github-token -f -
 
 env:
   - TARGET_GITHUB_ORG=REPLACE_ME

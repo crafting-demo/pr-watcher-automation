@@ -22,7 +22,7 @@ fi
 
 if [[ -z "${GITHUB_TOKEN:-}" ]]; then
   echo "[$(date -Is)] ERROR: GITHUB_TOKEN is empty. Create the secret with:" >&2
-  echo "    cs secret create -u github-token -f -" >&2
+  echo "    cs secret create github-token -f -" >&2
   exit 1
 fi
 
