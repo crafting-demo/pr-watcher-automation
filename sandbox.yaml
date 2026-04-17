@@ -7,20 +7,42 @@ overview: |
   execution block. Seen PR numbers are persisted at
   ~/pr-watcher/state/seen-prs.txt so the same PR is never acted on twice.
 
-  This template is intended to be instantiated by the Crafting Assistant when a
-  user asks for "run something every time a PR is opened on repo X". The
-  placeholder block (scripts/on-new-pr.sh) is what the assistant (or the user)
-  should replace with the real per-PR action.
+  Instructions for the Crafting Assistant
+  ---------------------------------------
+  When a user asks to "run something every time a PR is opened on repo X"
+  (or any variant — "watch PRs on ...", "trigger on new PR to ...", etc.),
+  use this template. Before calling `cs sandbox create`, you MUST:
 
-  Required parameters, passed in as sandbox-scoped env vars at create time:
-    - TARGET_GITHUB_ORG   GitHub org/user that owns the target repo
-    - TARGET_GITHUB_REPO  GitHub repo name
+  1. Prompt the user for the GitHub repository to watch, and parse it into:
+       - TARGET_GITHUB_ORG   (the org or user that owns the repo)
+       - TARGET_GITHUB_REPO  (the repo name)
+     Accept either "owner/repo" shorthand or a full GitHub URL and extract
+     the two parts yourself — do not make the user type them separately.
 
-  Required secret:
-    - github-token        User-private OPAQUE secret holding a GitHub token.
-                          For a fine-grained PAT, grant Pull requests: Read
-                          on the target repo. Create with:
-                              cs secret create github-token -f -
+  2. Confirm that the user has a user-private secret named `github-token`
+     in the current org. If it is missing, ask the user to create it in
+     the Crafting Web Console before you proceed:
+
+       Resources → Secrets → Private Secrets → Create Secret
+       Name: github-token
+       Content: paste the GitHub PAT
+
+     The PAT only needs fine-grained `Pull requests: Read` on the target
+     repo (or classic `public_repo` / `repo`). Mention this to the user
+     when asking them to create it. Do not attempt to create the secret
+     on the user's behalf — the token is personal and must be entered by
+     the user themselves.
+
+  3. Create the sandbox with private access so the private secret mounts:
+         cs sandbox create <name> \
+             --from def:sandbox.yaml \
+             --access=private \
+             -E TARGET_GITHUB_ORG=<org> \
+             -E TARGET_GITHUB_REPO=<repo>
+
+  4. Replace `scripts/on-new-pr.sh` with the real per-PR action the user
+     actually asked for. The placeholder in this template only prints —
+     it is NOT the finished automation.
 
 env:
   - TARGET_GITHUB_ORG=REPLACE_ME
@@ -38,7 +60,7 @@ workspaces:
       - path: pr-watcher
         repo:
           git: https://github.com/crafting-demo/pr-watcher-automation
-        version_spec: main
+        version_spec: master
         history:
           depth: 1
         manifest:
