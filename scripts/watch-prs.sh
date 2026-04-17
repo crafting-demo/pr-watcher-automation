@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Cron body for the PR-watcher automation template.
 #
-# Runs every 5 minutes inside the pr-watcher sandbox. Lists the open PRs on
-# ${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO} using the owner's GitHub token,
-# diffs them against the plain-text state file, and calls on-new-pr.sh for
-# every PR number seen for the first time.
+# Runs every 5 minutes inside the pr-watcher sandbox. Mints a short-lived
+# GitHub App installation token for ${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO},
+# lists the open PRs on that repo, diffs them against the plain-text state
+# file, and calls on-new-pr.sh for every PR number seen for the first time.
 
 set -euo pipefail
 
@@ -13,18 +13,34 @@ set -euo pipefail
 : "${PR_WATCHER_HOME:=/home/owner/pr-watcher}"
 : "${PR_WATCHER_STATE_FILE:=${PR_WATCHER_HOME}/state/seen-prs.txt}"
 
-# Prefer the env-expanded ${secret:github-token}. Fall back to the filesystem
-# mount so the template still works if the operator runs the script by hand
-# from a different workload that didn't inherit the sandbox env.
-if [[ -z "${GITHUB_TOKEN:-}" && -r /run/sandbox/fs/secrets/owner/github-token ]]; then
-  GITHUB_TOKEN="$(cat /run/sandbox/fs/secrets/owner/github-token)"
-fi
+mint_github_app_token() {
+  local repo="$1"
+  local helper="/opt/sandboxd/sbin/wsenv"
+  local request
+  local credential
+  local token
 
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-  echo "[$(date -Is)] ERROR: GITHUB_TOKEN is empty. Create the secret with:" >&2
-  echo "    cs secret create github-token -f -" >&2
-  exit 1
-fi
+  request="$(printf 'protocol=https\nhost=github.com\npath=%s\n\n' "${repo}")"
+  if ! credential="$("${helper}" git-credentials <<<"${request}")"; then
+    echo "[$(date -Is)] ERROR: failed to get a GitHub App installation token for ${repo}." >&2
+    echo "    Make sure the current Crafting org has Connect -> GitHub configured" >&2
+    echo "    for ${TARGET_GITHUB_ORG}, and that the installation includes ${repo}" >&2
+    echo "    with at least Pull requests: Read permission." >&2
+    return 1
+  fi
+
+  token="$(sed -n 's/^password=//p' <<<"${credential}")"
+  if [[ -z "${token}" ]]; then
+    echo "[$(date -Is)] ERROR: git-credentials returned no password for ${repo}." >&2
+    printf '%s\n' "${credential}" >&2
+    return 1
+  fi
+
+  printf '%s\n' "${token}"
+}
+
+repo="${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}"
+GITHUB_TOKEN="$(mint_github_app_token "${repo}")"
 
 # gh reads GH_TOKEN preferentially, then falls back to GITHUB_TOKEN. Export
 # both so whichever build of gh we get behaves the same way.
@@ -33,8 +49,6 @@ export GITHUB_TOKEN
 
 mkdir -p "$(dirname "${PR_WATCHER_STATE_FILE}")"
 touch "${PR_WATCHER_STATE_FILE}"
-
-repo="${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}"
 
 echo "[$(date -Is)] Polling ${repo}"
 

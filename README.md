@@ -7,8 +7,9 @@ A Crafting sandbox template for user-owned automations of the shape
 
 A single long-running workspace runs a job on `*/5 * * * *`. Every poll:
 
-1. Reads the sandbox owner's personal GitHub token from a user-private
-   secret (`github-token`).
+1. Mints a short-lived GitHub App installation token for
+   `${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}` via Crafting's workspace
+   credential helper.
 2. Runs `gh pr list --repo ${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}
    --state open` and parses the result with `gh`'s `--template` flag.
 3. Diffs the returned PR numbers against `~/pr-watcher/state/seen-prs.txt`.
@@ -26,8 +27,10 @@ whatever the user asked for.
   with a Repo manifest that installs the scripts, installs the GitHub CLI
   (`gh`) from the official apt repo, and registers a cron-scheduled
   `jobs.watch-prs` entry.
-- `scripts/watch-prs.sh` — cron body. Uses `gh pr list` + `--template` for
-  PR enumeration; no `curl`/`jq` dependency.
+- `scripts/watch-prs.sh` — cron body. Uses the workspace
+  `wsenv git-credentials` helper to mint a short-lived GitHub App
+  installation token, then runs `gh pr list` + `--template`; no
+  `curl`/`jq` dependency.
 - `scripts/on-new-pr.sh` — placeholder per-PR hook. Exits 0 by default.
 
 ## Parameters
@@ -42,114 +45,55 @@ or by rewriting the YAML directly:
 | `TARGET_GITHUB_ORG`   | GitHub org/user that owns the target repo |
 | `TARGET_GITHUB_REPO`  | GitHub repo name                          |
 
-## Secret
+## GitHub App Requirement
 
-The template references a **user-private OPAQUE** secret called
-`github-token`. The owning user must create it once before launching the
-sandbox:
+This template does **not** require a user PAT or a private secret. Instead,
+`scripts/watch-prs.sh` asks Crafting's workspace credential helper for a
+short-lived GitHub App installation token for the target repo, then exports it
+as `GH_TOKEN` / `GITHUB_TOKEN` for `gh`.
 
-```sh
-# paste the PAT and press Ctrl-D
-cs secret create github-token -f -
+Before launching the sandbox, make sure the current Crafting org has the
+GitHub App connected in the Web Console:
+
+```text
+Connect → GitHub
 ```
 
-(`cs secret create` is user-private by default; pass `--shared` to make it
-org-scoped instead. No `-u` flag on create.)
+The installation must:
 
-The secret is mounted at `/run/sandbox/fs/secrets/owner/github-token` and is
-also interpolated into `$GITHUB_TOKEN` via the top-level `env` field
-(`GITHUB_TOKEN=${secret:github-token}`). The watcher script uses the env var
-first and falls back to reading the mount file, so either path works.
+- include the target repo
+- have at least repository permission `Pull requests: Read`
 
-**Important:** user-private secrets are only surfaced to a sandbox when the
-sandbox is created with private access (`--access=private`) or with explicit
-sharing (`--access=collaborated:users=...:secrets=github-token`). In the
-default (`shared`) access mode the FUSE mount omits private secrets and
-`${secret:github-token}` expands to the empty string, so the watcher will
-error out. See `system/pkg/sandbox/workload/agent2/ext/workspace/modules/secrets/filesystem.go:106-131`
-and `system/pkg/sandbox/workload/agent2/modules/secrets.go:87-93`.
+### Identity model
 
-### What permissions does the PAT need?
+This automation runs using the org-shared GitHub App identity, not the
+individual user's personal GitHub identity. That means no user PAT is needed,
+but access is controlled by the app installation's repository selection and
+permissions.
 
-The watcher only calls `gh pr list` on the target repo — a read-only operation
-on pull requests — so the token can be scoped very narrowly. Pick the table
-that matches the PAT type you're creating at
-<https://github.com/settings/tokens>.
+### If you extend the handler
 
-**Fine-grained PAT** (preferred — narrowest possible scope):
+If `scripts/on-new-pr.sh` needs to do more than list PRs, update the GitHub
+App installation permissions accordingly:
 
-| Setting                 | Value                                             |
-| ----------------------- | ------------------------------------------------- |
-| Resource owner          | The org/user that owns `TARGET_GITHUB_REPO`       |
-| Repository access       | *Only select repositories* → pick the target repo |
-| Repository permissions  | **Pull requests: Read-only**                      |
-|                         | *Metadata: Read-only* (auto-selected, mandatory)  |
-| Organization perms      | none                                              |
-| Account perms           | none                                              |
-
-**Classic PAT** (coarser — GitHub doesn't offer a "PRs only" classic scope):
-
-| Repo visibility | Minimum scope  | Notes                                            |
-| --------------- | -------------- | ------------------------------------------------ |
-| Public only     | `public_repo`  | Read/write on public repos only.                 |
-| Any private     | `repo`         | Full read/write on all repos the user can reach. |
-
-If you extend `scripts/on-new-pr.sh` to do more than read (e.g. post a PR
-comment, create a check, dispatch a workflow, clone a private repo), bump the
-token's scopes accordingly and update this section:
-
-| Extra action the handler performs          | Fine-grained perm to add        | Classic scope to add          |
-| ------------------------------------------ | ------------------------------- | ----------------------------- |
-| Comment on the PR / update PR body         | Pull requests: Read and write   | covered by `repo`/`public_repo` |
-| Create/update commit statuses or checks    | Commits: Read and write **or** Checks: Read and write | covered by `repo`/`public_repo` |
-| `git clone` the PR branch                  | Contents: Read                  | covered by `repo`/`public_repo` |
-| `workflow_dispatch` a GitHub Actions run   | Actions: Read and write         | `workflow`                    |
-
-Set an expiry you're comfortable rotating (GitHub defaults fine-grained PATs
-to 30 days) and store only the raw token value in the `github-token` secret —
-no `ghp_` / `github_pat_` prefix stripping needed, `gh` handles both.
-
-### Per-user GitHub login (LoginProvider) compatibility
-
-Crafting recently added the `LoginProvider` feature — an org admin can set up
-a `github` OAuth2 login provider
-(`cs org login-provider create github --template github` + an OAuth client
-config, see the public docs) and each user then runs `cs login --provider github`
-once to authorise Crafting to receive their personal GitHub access token. The
-token is persisted as a per-user `Secret` of type `TOKEN` (see
-`docs/public/markdown/features/login-provider-and-access-tokens.md` and
-`system/pkg/integration/login/`).
-
-Today those `TOKEN`-type secrets are **not** surfaced to user code inside a
-workspace — the FUSE secret mount
-(`system/pkg/sandbox/workload/agent2/ext/workspace/modules/secrets/filesystem.go`)
-and the `${secret:NAME}` env expansion
-(`system/pkg/sandbox/workload/agent2/modules/secrets.go`) both filter to
-`OPAQUE` / `SECRET` / `KEYPAIR` / `SSHKEY` only. The only consumer of the
-`TOKEN` content is the LLM/MCP auth proxy
-(`system/pkg/controller/llm.go`, `secretResolveToken`).
-
-Until that plumbing is extended, this template points at an `OPAQUE` secret
-the user maintains directly. If/when the system exposes the LoginProvider
-token (e.g. at `/run/sandbox/fs/secrets/owner/login-token/github`), the fix
-is a one-line change in `scripts/watch-prs.sh`: update the fallback path.
+| Extra action the handler performs       | GitHub App repository permission |
+| --------------------------------------- | -------------------------------- |
+| Comment on the PR / update PR body      | Pull requests: Read and write    |
+| Create/update commit statuses or checks | Commit statuses: Read and write, or Checks: Read and write |
+| Read repo contents via API or clone     | Contents: Read                   |
+| `workflow_dispatch` a GitHub Actions run| Actions: Read and write          |
 
 ## How to launch it
 
 ```sh
-# 1. One-time: create the user-private GitHub token secret.
-cs secret create github-token -f -
-
-# 2. Point the template at your repo (edit sandbox.yaml or override at create time).
-#    NAME is positional; --access=private is required so the user-private
-#    github-token secret is actually mounted.
+# 1. Point the template at your repo (edit sandbox.yaml or override at create time).
+#    No PAT or private secret is needed; auth comes from the connected GitHub App.
 cs sandbox create pr-watcher-my-repo \
     --from def:sandbox.yaml \
-    --access=private \
     -E TARGET_GITHUB_ORG=my-org \
     -E TARGET_GITHUB_REPO=my-repo
 
-# 3. Watch logs.
+# 2. Watch logs.
 #    `cs logs` positional is a log-source name, not the sandbox — use -W to
 #    point at the workspace. Omit the positional to get an interactive picker.
 cs logs -f -W pr-watcher-my-repo/pr-watcher -k job watch-prs
@@ -190,3 +134,7 @@ Common follow-on actions the assistant might drop in here:
 - Post to Slack via `curl` + an `OPAQUE` secret holding a bot token.
 - Trigger a GitHub Actions workflow dispatch via
   `curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" ...`.
+
+`watch-prs.sh` exports `GH_TOKEN` and `GITHUB_TOKEN` as the short-lived GitHub
+App installation token for the watched repo, so follow-on GitHub API calls can
+reuse it if the app installation has the required permissions.
