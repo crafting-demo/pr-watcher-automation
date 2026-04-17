@@ -27,9 +27,7 @@ overview: |
      the user to confirm app setup or provide a PAT or other personal
      GitHub secret.
 
-  3. Create the sandbox:
-         cs sandbox create <name> \
-             --from def:sandbox.yaml
+  3. Create the sandbox
 
   4. Replace `scripts/on-new-pr.sh` with the real per-PR action the user
      actually asked for. The placeholder in this template only prints —
