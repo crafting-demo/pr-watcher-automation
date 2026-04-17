@@ -8,10 +8,10 @@ A Crafting sandbox template for user-owned automations of the shape
 A single long-running workspace runs a job on `*/5 * * * *`. Every poll:
 
 1. Mints a short-lived GitHub App installation token for
-   `${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}` via Crafting's workspace
-   credential helper.
-2. Runs `gh pr list --repo ${TARGET_GITHUB_ORG}/${TARGET_GITHUB_REPO}
-   --state open` and parses the result with `gh`'s `--template` flag.
+   the repo named in `~/pr-watcher/watch-target.txt` via Crafting's
+   workspace credential helper.
+2. Runs `gh pr list --repo OWNER/REPO --state open` and parses the result
+   with `gh`'s `--template` flag.
 3. Diffs the returned PR numbers against `~/pr-watcher/state/seen-prs.txt`.
 4. For each new PR, runs `~/pr-watcher/on-new-pr.sh` and appends the PR
    number to the state file on success.
@@ -25,32 +25,52 @@ whatever the user asked for.
 
 - `sandbox.yaml` — sandbox definition consumed by Crafting. Has one workspace
   with a Repo manifest that installs the scripts, installs the GitHub CLI
-  (`gh`) from the official apt repo, and registers a cron-scheduled
-  `jobs.watch-prs` entry.
+  (`gh`) from the official apt repo, injects `~/pr-watcher/watch-target.txt`,
+  and registers a cron-scheduled `jobs.watch-prs` entry.
 - `scripts/watch-prs.sh` — cron body. Uses the workspace
   `wsenv git-credentials` helper to mint a short-lived GitHub App
-  installation token, then runs `gh pr list` + `--template`; no
-  `curl`/`jq` dependency.
+  installation token, reads the repo target from `watch-target.txt`, then
+  runs `gh pr list` + `--template`; no `curl`/`jq` dependency.
 - `scripts/on-new-pr.sh` — placeholder per-PR hook. Exits 0 by default.
 
-## Parameters
+## Repo Target File
 
-The template's author / Crafting Assistant is expected to fill these in at
-sandbox-creation time (via `cs sandbox create -E KEY=VALUE` — which appends
-to the sandbox's env, so last-write-wins over the `REPLACE_ME` placeholders)
-or by rewriting the YAML directly:
+This template no longer uses sandbox-scoped env vars for the watched repo.
+Instead, the sandbox definition injects a plain-text file at:
 
-| Env var               | Meaning                                   |
-| --------------------- | ----------------------------------------- |
-| `TARGET_GITHUB_ORG`   | GitHub org/user that owns the target repo |
-| `TARGET_GITHUB_REPO`  | GitHub repo name                          |
+```text
+~/pr-watcher/watch-target.txt
+```
+
+The watcher reads the **first non-comment line** from that file. Accepted
+formats:
+
+```text
+owner/repo
+https://github.com/owner/repo
+```
+
+`sandbox.yaml` ships with this placeholder content:
+
+```text
+REPLACE_ME/REPLACE_ME
+```
+
+Before launching the sandbox, the template author / Crafting Assistant should
+rewrite that `system.files` content block in `sandbox.yaml` so it names the
+user's target repository.
+
+After the sandbox exists, the watched repo can also be changed by editing
+`~/pr-watcher/watch-target.txt` inside the workspace; the next poll will pick
+up the new value.
 
 ## GitHub App Requirement
 
-This template does **not** require a user PAT or a private secret. Instead,
-`scripts/watch-prs.sh` asks Crafting's workspace credential helper for a
-short-lived GitHub App installation token for the target repo, then exports it
-as `GH_TOKEN` / `GITHUB_TOKEN` for `gh`.
+This template does **not** require sandbox-scoped env vars for repo selection,
+a user PAT, or a private secret. `scripts/watch-prs.sh` reads the target repo
+from `~/pr-watcher/watch-target.txt`, asks Crafting's workspace credential
+helper for a short-lived GitHub App installation token for that repo, then
+exports it as `GH_TOKEN` / `GITHUB_TOKEN` for `gh`.
 
 Before launching the sandbox, make sure the current Crafting org has the
 GitHub App connected in the Web Console:
@@ -86,12 +106,11 @@ App installation permissions accordingly:
 ## How to launch it
 
 ```sh
-# 1. Point the template at your repo (edit sandbox.yaml or override at create time).
-#    No PAT or private secret is needed; auth comes from the connected GitHub App.
+# 1. Edit sandbox.yaml so the injected ~/pr-watcher/watch-target.txt file
+#    contains your repo on its first non-comment line.
+#    No PAT, private secret, or -E env override is needed.
 cs sandbox create pr-watcher-my-repo \
-    --from def:sandbox.yaml \
-    -E TARGET_GITHUB_ORG=my-org \
-    -E TARGET_GITHUB_REPO=my-repo
+    --from def:sandbox.yaml
 
 # 2. Watch logs.
 #    `cs logs` positional is a log-source name, not the sandbox — use -W to
