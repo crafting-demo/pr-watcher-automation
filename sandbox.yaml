@@ -1,0 +1,80 @@
+overview: |
+  PR-watcher automation template.
+
+  A single long-running workspace that runs a cron job every 5 minutes. The job
+  authenticates to GitHub with the sandbox owner's personal token, lists open
+  PRs on the target repo, and for each newly-seen PR runs a placeholder
+  execution block. Seen PR numbers are persisted at
+  ~/pr-watcher/state/seen-prs.txt so the same PR is never acted on twice.
+
+  This template is intended to be instantiated by the Crafting Assistant when a
+  user asks for "run something every time a PR is opened on repo X". The
+  placeholder block (scripts/on-new-pr.sh) is what the assistant (or the user)
+  should replace with the real per-PR action.
+
+  Required parameters, passed in as sandbox-scoped env vars at create time:
+    - TARGET_GITHUB_ORG   GitHub org/user that owns the target repo
+    - TARGET_GITHUB_REPO  GitHub repo name
+
+  Required secret:
+    - github-token        User-private OPAQUE secret holding a GitHub token
+                          with `repo` scope. Create with:
+                              cs secret create -u github-token -f                             
+
+env:
+  - TARGET_GITHUB_ORG=REPLACE_ME
+  - TARGET_GITHUB_REPO=REPLACE_ME
+  - PR_WATCHER_HOME=/home/owner/pr-watcher
+  - PR_WATCHER_STATE_FILE=/home/owner/pr-watcher/state/seen-prs.txt
+  - GITHUB_TOKEN=${secret:github-token}
+
+workspaces:
+  - name: pr-watcher
+    # base_snapshot intentionally omitted: the org's default_base_image
+    # (or the cluster default) is used. All stock Crafting shared workspace
+    # bases are Debian-family, so the `build` hook's apt-get flow works.
+    checkouts:
+      - path: pr-watcher
+        repo:
+          git: https://github.com/crafting-demo/pr-watcher-automation
+        version_spec: main
+        history:
+          depth: 1
+        manifest:
+          overlays:
+            - inline:
+                hooks:
+                  post-checkout:
+                    cmd: |
+                      set -euo pipefail
+                      mkdir -p "${PR_WATCHER_HOME}/state" "${PR_WATCHER_HOME}/logs"
+                      touch "${PR_WATCHER_STATE_FILE}"
+                      cp -f scripts/watch-prs.sh "${PR_WATCHER_HOME}/watch-prs.sh"
+                      cp -f scripts/on-new-pr.sh "${PR_WATCHER_HOME}/on-new-pr.sh"
+                      chmod +x "${PR_WATCHER_HOME}/watch-prs.sh" "${PR_WATCHER_HOME}/on-new-pr.sh"
+                  build:
+                    cmd: |
+                      set -euo pipefail
+                      if ! command -v gh >/dev/null 2>&1; then
+                        sudo install -m 0755 -d /etc/apt/keyrings
+                        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                          | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+                        sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+                        arch="$(dpkg --print-architecture)"
+                        echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                          | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+                        sudo apt-get update -qq
+                        sudo apt-get install -y -qq --no-install-recommends gh ca-certificates
+                      fi
+                jobs:
+                  watch-prs:
+                    run:
+                      cmd: |
+                        "${PR_WATCHER_HOME}/watch-prs.sh" \
+                          >> "${PR_WATCHER_HOME}/logs/watch-prs.log" 2>&1
+                    schedule: "*/5 * * * *"
+                    disable_on_start: false
+                commands:
+                  watch-prs-now:
+                    run:
+                      cmd: "${PR_WATCHER_HOME}/watch-prs.sh"
